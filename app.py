@@ -2,18 +2,104 @@ from flask import Flask, render_template, request, jsonify
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv
+import uuid
+import time
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
+
+# Validate essential environment variable
+if not os.getenv("GEMINI_API_KEY"):
+    raise ValueError("GEMINI_API_KEY environment variable not set")
 
 # Configure Gemini API
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
+app.config['JSON_SORT_KEYS'] = False  # Maintain response order
 
-# Store conversation history using a simple dictionary
-# In production, use a database or session management
+# Configure generation parameters for consistent responses
+GENERATION_CONFIG = {
+    "temperature": 0.3,
+    "top_p": 0.95,
+    "top_k": 40,
+    "max_output_tokens": 8192,
+}
+
+SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
+
+# Store conversation history (in-memory, consider Redis for production)
 conversation_history = {}
+
+def validate_form_data(form_data):
+    """Validate required form fields"""
+    required_fields = [
+        'product_category', 
+        'printing_type',
+        'layer_structure',
+        'packaging_material',
+        'packaging_type'
+    ]
+    
+    for field in required_fields:
+        if not form_data.get(field):
+            return False, f"Missing required field: {field}"
+    return True, ""
+
+def construct_base_prompt(form_data, language):
+    """Construct the main recommendation prompt with structured sections"""
+    lang_prefix = "निम्नलिखित प्रारूप में उत्तर दें:\n\n" if language == "Hindi" else ""
+    
+    return f"""
+    As a senior flexible packaging engineer, recommend the optimal material structure for:
+    
+    Product Category: {form_data['product_category']}
+    Printing Type: {form_data['printing_type']}
+    Layer Structure: {form_data['layer_structure']}
+    Primary Material: {form_data['packaging_material']}
+    Packaging Format: {form_data['packaging_type']}
+    Sealing Type: {form_data.get('sealing_type', 'Not specified')}
+    Barrier Requirements: {', '.join(form_data.get('barrier_requirements', []))}
+    Sustainability Options: {', '.join(form_data.get('sustainability_options', []))}
+    Shelf Life: {form_data.get('shelf_life', 'Not specified')}
+    Special Features: {', '.join(form_data.get('special_features', []))}
+    Production Volume: {form_data.get('production_volume', 'Not specified')}
+    Custom Requirements: {form_data.get('custom_requirements', 'None')}
+
+    {lang_prefix}Format your response in these MARKDOWN sections with emojis:
+    
+    ## 🔹 RECOMMENDED STRUCTURE
+    - Layer-by-layer material structure
+    - Thickness recommendations
+    - Special treatments/additives
+    
+    ## 🔸 MATERIALS DESCRIPTION
+    - Technical properties of each material
+    - Compatibility between layers
+    - Manufacturing considerations
+    
+    ## 🔹 KEY PROPERTIES
+    - Barrier performance metrics
+    - Thermal properties
+    - Mechanical strengths
+    - Sustainability features
+    
+    ## 🔸 BENEFITS FOR APPLICATION
+    - Product-specific protection
+    - Cost-effectiveness
+    - Sustainability advantages
+    - Market appeal factors
+    
+    Include technical specifications and industry standards where applicable.
+    Use metric units and material science terminology.
+    Response language: {language}
+    """
 
 @app.route('/')
 def index():
@@ -21,138 +107,127 @@ def index():
 
 @app.route('/get_recommendation', methods=['POST'])
 def get_recommendation():
-    # Get form data
-    product_category = request.form.get('product_category')
-    printing_type = request.form.get('printing_type')
-    layer_structure = request.form.get('layer_structure')
-    custom_requirements = request.form.get('custom_requirements', '')
-    language = request.form.get('language')
-    
-    # Create a unique session ID using combination of inputs
-    session_id = f"{product_category}_{printing_type}_{layer_structure}"
-    
-    # Determine language prefix for better structure
-    lang_prefix = ""
-    if language == "Hindi":
-        lang_prefix = "निम्नलिखित प्रारूप में उत्तर दें:\n\n"
-    
-    # Construct prompt for Gemini AI with structured output instructions
-    prompt = f"""
-    Suggest the best flexible packaging material structure for a {product_category} product 
-    using {printing_type} printing with {layer_structure} layers.
-    
-    Additional requirements: {custom_requirements}.
-    
-    {lang_prefix}Format your response in clearly marked sections with emojis:
-    
-    🔹 **RECOMMENDED STRUCTURE:**
-    [Provide a detailed layer-by-layer structure with specific materials]
-    
-    🔹 **MATERIALS DESCRIPTION:**
-    [Describe each material used in the structure with their specific properties]
-    
-    🔹 **KEY PROPERTIES:**
-    [List the key properties of this structure as bullet points]
-    
-    🔹 **BENEFITS FOR THIS APPLICATION:**
-    [Explain 3-5 specific benefits for this {product_category} application]
-    
-    Make sure sections are clearly separated with line breaks and headings are bold.
-    Provide the response in {language}.
-    """
-    
     try:
-        # Call Gemini API with updated model name
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        response = model.generate_content(prompt)
+        form_data = request.form.to_dict()
+        form_data['barrier_requirements'] = request.form.getlist('barrier_requirements')
+        form_data['sustainability_options'] = request.form.getlist('sustainability_options')
+        form_data['special_features'] = request.form.getlist('special_features')
+
+        # Validate form data
+        is_valid, message = validate_form_data(form_data)
+        if not is_valid:
+            return jsonify({'status': 'error', 'message': message}), 400
+
+        # Create unique session ID
+        session_id = f"{datetime.now().timestamp()}-{uuid.uuid4().hex[:8]}"
         
+        # Construct AI prompt
+        language = form_data.get('language', 'English')
+        prompt = construct_base_prompt(form_data, language)
+        
+        # Initialize conversation history
+        conversation_history[session_id] = {
+            'context': form_data,
+            'chat_history': [
+                {'role': 'system', 'content': 'Initial recommendation generated'},
+                {'role': 'assistant', 'content': ''}  # Placeholder for recommendation
+            ],
+            'timestamp': time.time()
+        }
+
+        # Generate recommendation
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        response = model.generate_content(prompt)
         recommendation = response.text
         
-        # Store the conversation history
-        conversation_history[session_id] = {
-            'initial_prompt': prompt,
-            'product_category': product_category,
-            'printing_type': printing_type,
-            'layer_structure': layer_structure,
-            'custom_requirements': custom_requirements,
-            'language': language,
-            'chat': [
-                {'role': 'system', 'content': 'Initial recommendation provided.'},
-            ]
-        }
-        
+        # Store generated recommendation
+        conversation_history[session_id]['chat_history'][1]['content'] = recommendation
+
         return jsonify({
             'status': 'success',
             'recommendation': recommendation,
             'session_id': session_id
         })
-        
+
     except Exception as e:
+        app.logger.error(f"Recommendation error: {str(e)}")
         return jsonify({
             'status': 'error',
-            'message': str(e)
-        })
+            'message': f"Failed to generate recommendation: {str(e)}"
+        }), 500
 
 @app.route('/ask_question', methods=['POST'])
 def ask_question():
-    # Get question data
-    question = request.form.get('question')
-    session_id = request.form.get('session_id')
-    language = request.form.get('language')
-    
-    # Check if session exists
-    if session_id not in conversation_history:
-        return jsonify({
-            'status': 'error',
-            'message': 'Session expired or not found. Please get a new recommendation.'
-        })
-    
-    # Get conversation context
-    context = conversation_history[session_id]
-    
-    # Add question to chat history
-    context['chat'].append({'role': 'user', 'content': question})
-    
-    # Prepare prompt for follow-up question
-    follow_up_prompt = f"""
-    You're a flexible packaging material expert. The user previously received a recommendation for:
-    - Product category: {context['product_category']}
-    - Printing type: {context['printing_type']}
-    - Layer structure: {context['layer_structure']}
-    - Custom requirements: {context['custom_requirements']}
-    
-    Now they have a follow-up question: "{question}"
-    
-    Answer the question specifically about the packaging recommendation you previously gave, considering all the technical details of the materials, structure, and application.
-    
-    Format your answer with:
-    🔹 **ANSWER:**
-    [Your detailed, technically accurate answer]
-    
-    Be concise but thorough. Provide specific technical information when relevant.
-    Respond in {language}.
-    """
-    
     try:
-        # Call Gemini API for the answer
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        question = request.form.get('question', '').strip()
+        session_id = request.form.get('session_id', '').strip()
+        language = request.form.get('language', 'English')
+
+        if not question or not session_id:
+            return jsonify({'status': 'error', 'message': 'Missing parameters'}), 400
+
+        session = conversation_history.get(session_id)
+        if not session:
+            return jsonify({'status': 'error', 'message': 'Invalid session'}), 404
+
+        # Construct follow-up prompt with full context
+        context = session['context']
+        follow_up_prompt = f"""
+        Packaging Expert Context:
+        - Product: {context['product_category']}
+        - Structure: {context['layer_structure']} layers
+        - Materials: {context['packaging_material']} base
+        - Printing: {context['printing_type']}
+        - Barriers: {', '.join(context.get('barrier_requirements', []))}
+        - Sustainability: {', '.join(context.get('sustainability_options', []))}
+        
+        User Question: "{question}"
+        
+        Required Answer Format:
+        - Technical depth with material science principles
+        - Reference industry standards (ISO, ASTM)
+        - Compare alternatives if relevant
+        - Highlight cost-performance tradeoffs
+        - Language: {language}
+        
+        Structure Response As:
+        📌 **Key Analysis**: [Core technical explanation]
+        🔍 **Considerations**: [Critical factors]
+        💡 **Recommendation**: [Expert opinion]
+        """
+
+        # Generate answer
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
         response = model.generate_content(follow_up_prompt)
-        
         answer = response.text
-        
-        # Store the answer in chat history
-        context['chat'].append({'role': 'assistant', 'content': answer})
-        
+
+        # Update conversation history
+        session['chat_history'].extend([
+            {'role': 'user', 'content': question},
+            {'role': 'assistant', 'content': answer}
+        ])
+
         return jsonify({
             'status': 'success',
             'answer': answer
         })
-        
+
     except Exception as e:
+        app.logger.error(f"Question error: {str(e)}")
         return jsonify({
             'status': 'error',
-            'message': str(e)
-        })
+            'message': f"Failed to process question: {str(e)}"
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
