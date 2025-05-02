@@ -670,6 +670,9 @@
                                     <option value="Arabic">Arabic</option>
                                     <option value="Russian">Russian</option>
                                 </select>
+                                <select class="form-select form-select-sm" id="voice-select">
+                                    <option value="" disabled selected>Select Voice</option>
+                                </select>
                             </div>
                             <div class="d-grid gap-2">
                                 <button class="btn btn-primary" type="submit" id="submit-btn">
@@ -747,5 +750,51 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/voice.js') }}"></script>
     <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+    <script>
+document.addEventListener('DOMContentLoaded', function() {
+    const voiceSelect = document.getElementById('voice-select');
+    const speakBtn = document.getElementById('speak-btn');
+    let voices = [];
+
+    function populateVoices() {
+        voices = window.speechSynthesis.getVoices();
+        voiceSelect.innerHTML = '<option value="" disabled selected>Select Voice</option>';
+        
+        voices.forEach(voice => {
+            if (voice.lang.startsWith('en')) { // Filter English voices
+                const option = document.createElement('option');
+                option.value = voice.name;
+                option.textContent = `${voice.name} (${voice.lang})`;
+                voiceSelect.appendChild(option);
+            }
+        });
+        
+        if (voices.length > 0) {
+            speakBtn.disabled = false;
+            voiceSelect.value = voices.find(v => v.default)?.name || voices[0].name;
+        }
+    }
+
+    // Initial population
+    populateVoices();
+    
+    // Update voices when they change
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+        speechSynthesis.onvoiceschanged = populateVoices;
+    }
+
+    // Modify your existing speak functionality to use selected voice
+    function speakText(text) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const selectedVoice = voices.find(voice => voice.name === voiceSelect.value);
+        if (selectedVoice) {
+            utterance.voice = selectedVoice;
+        }
+        window.speechSynthesis.speak(utterance);
+    }
+
+    // Update your existing speak button handler to use speakText
+});
+</script>
 </body>
 </html>
