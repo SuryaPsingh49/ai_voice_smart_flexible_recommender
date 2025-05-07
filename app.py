@@ -137,7 +137,7 @@ def get_recommendation():
 
         # Generate recommendation
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-pro',
+            model_name='gemini-2.0-flash',
             generation_config=GENERATION_CONFIG,
             safety_settings=SAFETY_SETTINGS
         )
