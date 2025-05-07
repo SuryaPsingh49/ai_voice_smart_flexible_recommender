@@ -9,12 +9,8 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-# Validate essential environment variable
-if not os.getenv("GEMINI_API_KEY"):
-    raise ValueError("GEMINI_API_KEY environment variable not set")
-
-# Configure Gemini API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Get API key and validate
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False  # Maintain response order
@@ -108,6 +104,16 @@ def index():
 @app.route('/get_recommendation', methods=['POST'])
 def get_recommendation():
     try:
+        # Check for API key before processing
+        if not GEMINI_API_KEY:
+            return jsonify({
+                'status': 'error',
+                'message': 'GEMINI_API_KEY environment variable is not set. Please set it in your .env file.'
+            }), 500
+            
+        # Configure API with current key
+        genai.configure(api_key=GEMINI_API_KEY)
+        
         form_data = request.form.to_dict()
         form_data['barrier_requirements'] = request.form.getlist('barrier_requirements')
         form_data['sustainability_options'] = request.form.getlist('sustainability_options')
@@ -136,23 +142,37 @@ def get_recommendation():
         }
 
         # Generate recommendation
-        model = genai.GenerativeModel(
-            model_name='gemini-1.5-pro',
-            generation_config=GENERATION_CONFIG,
-            safety_settings=SAFETY_SETTINGS
-        )
-        
-        response = model.generate_content(prompt)
-        recommendation = response.text
-        
-        # Store generated recommendation
-        conversation_history[session_id]['chat_history'][1]['content'] = recommendation
+        try:
+            model = genai.GenerativeModel(
+                model_name='gemini-1.5-pro',
+                generation_config=GENERATION_CONFIG,
+                safety_settings=SAFETY_SETTINGS
+            )
+            
+            response = model.generate_content(prompt)
+            recommendation = response.text
+            
+            # Store generated recommendation
+            conversation_history[session_id]['chat_history'][1]['content'] = recommendation
 
-        return jsonify({
-            'status': 'success',
-            'recommendation': recommendation,
-            'session_id': session_id
-        })
+            return jsonify({
+                'status': 'success',
+                'recommendation': recommendation,
+                'session_id': session_id
+            })
+        except Exception as api_error:
+            # Handle API-specific errors
+            error_message = str(api_error)
+            if "API_KEY_INVALID" in error_message or "API key expired" in error_message:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'The Gemini API key is invalid or has expired. Please update your API key in the .env file.'
+                }), 401
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Gemini API error: {error_message}"
+                }), 500
 
     except Exception as e:
         app.logger.error(f"Recommendation error: {str(e)}")
@@ -164,6 +184,16 @@ def get_recommendation():
 @app.route('/ask_question', methods=['POST'])
 def ask_question():
     try:
+        # Check for API key before processing
+        if not GEMINI_API_KEY:
+            return jsonify({
+                'status': 'error',
+                'message': 'GEMINI_API_KEY environment variable is not set. Please set it in your .env file.'
+            }), 500
+            
+        # Configure API with current key
+        genai.configure(api_key=GEMINI_API_KEY)
+        
         question = request.form.get('question', '').strip()
         session_id = request.form.get('session_id', '').strip()
         language = request.form.get('language', 'English')
@@ -202,25 +232,39 @@ def ask_question():
         """
 
         # Generate answer
-        model = genai.GenerativeModel(
-            model_name='gemini-1.5-pro',
-            generation_config=GENERATION_CONFIG,
-            safety_settings=SAFETY_SETTINGS
-        )
-        
-        response = model.generate_content(follow_up_prompt)
-        answer = response.text
+        try:
+            model = genai.GenerativeModel(
+                model_name='gemini-1.5-pro',
+                generation_config=GENERATION_CONFIG,
+                safety_settings=SAFETY_SETTINGS
+            )
+            
+            response = model.generate_content(follow_up_prompt)
+            answer = response.text
 
-        # Update conversation history
-        session['chat_history'].extend([
-            {'role': 'user', 'content': question},
-            {'role': 'assistant', 'content': answer}
-        ])
+            # Update conversation history
+            session['chat_history'].extend([
+                {'role': 'user', 'content': question},
+                {'role': 'assistant', 'content': answer}
+            ])
 
-        return jsonify({
-            'status': 'success',
-            'answer': answer
-        })
+            return jsonify({
+                'status': 'success',
+                'answer': answer
+            })
+        except Exception as api_error:
+            # Handle API-specific errors
+            error_message = str(api_error)
+            if "API_KEY_INVALID" in error_message or "API key expired" in error_message:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'The Gemini API key is invalid or has expired. Please update your API key in the .env file.'
+                }), 401
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Gemini API error: {error_message}"
+                }), 500
 
     except Exception as e:
         app.logger.error(f"Question error: {str(e)}")
@@ -230,4 +274,12 @@ def ask_question():
         }), 500
 
 if __name__ == '__main__':
+    # Provide helpful message about API key status when starting the app
+    if not GEMINI_API_KEY:
+        print("\n⚠️  WARNING: GEMINI_API_KEY environment variable is not set!")
+        print("Please ensure you have created a .env file with your valid API key.")
+        print("Example: GEMINI_API_KEY=your_api_key_here\n")
+    else:
+        print("\n✅ GEMINI_API_KEY is configured. API key found in environment variables.\n")
+        
     app.run(debug=True)
