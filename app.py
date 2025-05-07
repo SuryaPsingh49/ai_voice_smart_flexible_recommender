@@ -9,31 +9,12 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-# Get API key from environment variables
-api_key = os.getenv("GEMINI_API_KEY")
-
 # Validate essential environment variable
-if not api_key:
+if not os.getenv("GEMINI_API_KEY"):
     raise ValueError("GEMINI_API_KEY environment variable not set")
 
-# Better error handling for API key issues
-try:
-    # Configure Gemini API
-    genai.configure(api_key=api_key)
-    
-    # Quick validation of API key by making a minimal request
-    model = genai.GenerativeModel('gemini-1.5-pro')
-    model.generate_content("test")
-    
-except Exception as e:
-    if "API_KEY_INVALID" in str(e) or "API key expired" in str(e):
-        print("ERROR: Your Gemini API key has expired or is invalid.")
-        print("Please get a new API key from https://aistudio.google.com/app/apikey")
-        print("Then update your .env file with the new key")
-        exit(1)
-    else:
-        print(f"API configuration error: {str(e)}")
-        exit(1)
+# Configure Gemini API
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False  # Maintain response order
@@ -154,33 +135,24 @@ def get_recommendation():
             'timestamp': time.time()
         }
 
-        # Generate recommendation with additional error handling
-        try:
-            model = genai.GenerativeModel(
-                model_name='gemini-1.5-pro',
-                generation_config=GENERATION_CONFIG,
-                safety_settings=SAFETY_SETTINGS
-            )
-            
-            response = model.generate_content(prompt)
-            recommendation = response.text
-            
-            # Store generated recommendation
-            conversation_history[session_id]['chat_history'][1]['content'] = recommendation
+        # Generate recommendation
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        response = model.generate_content(prompt)
+        recommendation = response.text
+        
+        # Store generated recommendation
+        conversation_history[session_id]['chat_history'][1]['content'] = recommendation
 
-            return jsonify({
-                'status': 'success',
-                'recommendation': recommendation,
-                'session_id': session_id
-            })
-        except Exception as api_error:
-            if "API_KEY_INVALID" in str(api_error) or "API key expired" in str(api_error):
-                return jsonify({
-                    'status': 'error',
-                    'message': "API key expired or invalid. Please update your API key in the .env file."
-                }), 401
-            else:
-                raise  # Re-raise for general error handling
+        return jsonify({
+            'status': 'success',
+            'recommendation': recommendation,
+            'session_id': session_id
+        })
 
     except Exception as e:
         app.logger.error(f"Recommendation error: {str(e)}")
@@ -229,35 +201,26 @@ def ask_question():
         💡 **Recommendation**: [Expert opinion]
         """
 
-        # Generate answer with additional error handling
-        try:
-            model = genai.GenerativeModel(
-                model_name='gemini-1.5-pro',
-                generation_config=GENERATION_CONFIG,
-                safety_settings=SAFETY_SETTINGS
-            )
-            
-            response = model.generate_content(follow_up_prompt)
-            answer = response.text
+        # Generate answer
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        response = model.generate_content(follow_up_prompt)
+        answer = response.text
 
-            # Update conversation history
-            session['chat_history'].extend([
-                {'role': 'user', 'content': question},
-                {'role': 'assistant', 'content': answer}
-            ])
+        # Update conversation history
+        session['chat_history'].extend([
+            {'role': 'user', 'content': question},
+            {'role': 'assistant', 'content': answer}
+        ])
 
-            return jsonify({
-                'status': 'success',
-                'answer': answer
-            })
-        except Exception as api_error:
-            if "API_KEY_INVALID" in str(api_error) or "API key expired" in str(api_error):
-                return jsonify({
-                    'status': 'error',
-                    'message': "API key expired or invalid. Please update your API key in the .env file."
-                }), 401
-            else:
-                raise  # Re-raise for general error handling
+        return jsonify({
+            'status': 'success',
+            'answer': answer
+        })
 
     except Exception as e:
         app.logger.error(f"Question error: {str(e)}")
