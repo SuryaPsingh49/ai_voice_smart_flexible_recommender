@@ -9,8 +9,12 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-# Get API key and validate
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Validate essential environment variable
+if not os.getenv("GEMINI_API_KEY"):
+    raise ValueError("GEMINI_API_KEY environment variable not set")
+
+# Configure Gemini API
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False  # Maintain response order
@@ -97,23 +101,177 @@ def construct_base_prompt(form_data, language):
     Response language: {language}
     """
 
+# ----- Waste Calculator Functions -----
+
+def validate_waste_calculator_data(data):
+    """Validate required fields for waste calculator"""
+    required_fields = [
+        'pouchHeight',
+        'pouchWidth',
+        'hasGusset',
+        'isFivePanel',
+        'laminateStructure',
+        'gsm',
+        'quantityType'
+    ]
+    
+    for field in required_fields:
+        if field not in data:
+            return False, f"Missing required field: {field}"
+            
+    # Validate conditional required fields
+    if data.get('hasGusset') == True and 'gussetSize' not in data:
+        return False, "Missing required field: gussetSize for gusseted pouch"
+        
+    if data.get('isFivePanel') == True and 'sidePanelWidth' not in data:
+        return False, "Missing required field: sidePanelWidth for 5-panel pouch"
+        
+    if data.get('quantityType') == 'pouches' and 'pouchesQuantity' not in data:
+        return False, "Missing required field: pouchesQuantity"
+        
+    if data.get('quantityType') == 'laminate' and 'laminateWeight' not in data:
+        return False, "Missing required field: laminateWeight"
+        
+    return True, ""
+
+def calculate_waste(data):
+    """Calculate pouch manufacturing waste based on specifications"""
+    
+    # Calculate pouch area in mm²
+    if data.get('isFivePanel'):
+        pouchAreaMm2 = data['pouchHeight'] * (data['pouchWidth'] + 2 * data['sidePanelWidth'])
+    elif data.get('hasGusset'):
+        pouchAreaMm2 = data['pouchHeight'] * (data['pouchWidth'] + data['gussetSize'])
+    else:
+        pouchAreaMm2 = data['pouchHeight'] * data['pouchWidth']
+    
+    # Convert to m²
+    pouchAreaM2 = pouchAreaMm2 / 1000000
+    
+    # Calculate total area
+    if data.get('quantityType') == 'pouches':
+        totalAreaM2 = pouchAreaM2 * data['pouchesQuantity']
+    else:
+        totalAreaM2 = (data['laminateWeight'] * 1000) / data['gsm']
+    
+    # Determine waste percentages based on quantity
+    quantity = data['pouchesQuantity'] if data.get('quantityType') == 'pouches' else round(totalAreaM2 / pouchAreaM2)
+    
+    
+    
+    if quantity <= 10000:
+        printingWastePercent = 2.0  # 100%
+        pouchingWastePercent = 2.0  # 100%
+    elif quantity <= 50000:
+        printingWastePercent = 0.30  # 3%
+        pouchingWastePercent = 0.20  # 2%
+    else:
+        printingWastePercent = 0.10  # 2%
+        pouchingWastePercent = 0.10  # 1.5%
+    
+    # Calculate waste by process
+    printingWasteM2 = totalAreaM2 * printingWastePercent
+    laminationWasteM2 = totalAreaM2 * 0.20  # 2%
+    slittingWasteM2 = totalAreaM2 * 0.15  # 0.75%
+    pouchingWasteM2 = totalAreaM2 * pouchingWastePercent
+    
+    # Total waste
+    totalWasteM2 = printingWasteM2 + laminationWasteM2 + slittingWasteM2 + pouchingWasteM2
+    
+    # Convert to KG
+    printingWasteKg = (printingWasteM2 * data['gsm']) / 1000
+    laminationWasteKg = (laminationWasteM2 * data['gsm']) / 1000
+    slittingWasteKg = (slittingWasteM2 * data['gsm']) / 1000
+    pouchingWasteKg = (pouchingWasteM2 * data['gsm']) / 1000
+    totalWasteKg = (totalWasteM2 * data['gsm']) / 1000
+    totalLaminateKg = (totalAreaM2 * data['gsm']) / 1000
+    
+    # Calculate number of pouches (if laminate weight was input)
+    if data.get('quantityType') == 'laminate':
+        calculatedPouches = round(totalAreaM2 / pouchAreaM2)
+    else:
+        calculatedPouches = data['pouchesQuantity']
+    
+    return {
+        "pouchAreaMm2": round(pouchAreaMm2, 2),
+        "pouchAreaM2": round(pouchAreaM2, 4),
+        "totalAreaM2": round(totalAreaM2, 2),
+        "totalLaminateKg": round(totalLaminateKg, 2),
+        "calculatedPouches": calculatedPouches,
+        "waste": {
+            "printing": {
+                "areaM2": round(printingWasteM2, 2),
+                "weightKg": round(printingWasteKg, 2),
+                "percentage": round(printingWastePercent * 100, 2)
+            },
+            "lamination": {
+                "areaM2": round(laminationWasteM2, 2),
+                "weightKg": round(laminationWasteKg, 2),
+                "percentage": 2.0
+            },
+            "slitting": {
+                "areaM2": round(slittingWasteM2, 2),
+                "weightKg": round(slittingWasteKg, 2),
+                "percentage": 0.75
+            },
+            "pouching": {
+                "areaM2": round(pouchingWasteM2, 2),
+                "weightKg": round(pouchingWasteKg, 2),
+                "percentage": round(pouchingWastePercent * 100, 2)
+            },
+            "total": {
+                "areaM2": round(totalWasteM2, 2),
+                "weightKg": round(totalWasteKg, 2),
+                "percentage": round((totalWasteM2 / totalAreaM2) * 100, 2)
+            }
+        }
+    }
+
+# ----- Routes -----
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
+@app.route('/waste-calculator')
+def waste_calculator():
+    return render_template('waste_calculator.html')
+
+@app.route('/calculate-waste', methods=['POST'])
+def calculate_waste_route():
+    try:
+        data = request.json
+        
+        # Convert string booleans to actual booleans
+        if 'hasGusset' in data:
+            data['hasGusset'] = data['hasGusset'] == 'yes' if isinstance(data['hasGusset'], str) else data['hasGusset']
+        
+        if 'isFivePanel' in data:
+            data['isFivePanel'] = data['isFivePanel'] == 'yes' if isinstance(data['isFivePanel'], str) else data['isFivePanel']
+        
+        # Validate data
+        is_valid, message = validate_waste_calculator_data(data)
+        if not is_valid:
+            return jsonify({'status': 'error', 'message': message}), 400
+        
+        # Perform calculations
+        results = calculate_waste(data)
+        
+        return jsonify({
+            'status': 'success',
+            'results': results
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Waste calculation error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Failed to calculate waste: {str(e)}"
+        }), 500
+
 @app.route('/get_recommendation', methods=['POST'])
 def get_recommendation():
     try:
-        # Check for API key before processing
-        if not GEMINI_API_KEY:
-            return jsonify({
-                'status': 'error',
-                'message': 'GEMINI_API_KEY environment variable is not set. Please set it in your .env file.'
-            }), 500
-            
-        # Configure API with current key
-        genai.configure(api_key=GEMINI_API_KEY)
-        
         form_data = request.form.to_dict()
         form_data['barrier_requirements'] = request.form.getlist('barrier_requirements')
         form_data['sustainability_options'] = request.form.getlist('sustainability_options')
@@ -142,37 +300,23 @@ def get_recommendation():
         }
 
         # Generate recommendation
-        try:
-            model = genai.GenerativeModel(
-                model_name='gemini-1.5-pro',
-                generation_config=GENERATION_CONFIG,
-                safety_settings=SAFETY_SETTINGS
-            )
-            
-            response = model.generate_content(prompt)
-            recommendation = response.text
-            
-            # Store generated recommendation
-            conversation_history[session_id]['chat_history'][1]['content'] = recommendation
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        response = model.generate_content(prompt)
+        recommendation = response.text
+        
+        # Store generated recommendation
+        conversation_history[session_id]['chat_history'][1]['content'] = recommendation
 
-            return jsonify({
-                'status': 'success',
-                'recommendation': recommendation,
-                'session_id': session_id
-            })
-        except Exception as api_error:
-            # Handle API-specific errors
-            error_message = str(api_error)
-            if "API_KEY_INVALID" in error_message or "API key expired" in error_message:
-                return jsonify({
-                    'status': 'error',
-                    'message': 'The Gemini API key is invalid or has expired. Please update your API key in the .env file.'
-                }), 401
-            else:
-                return jsonify({
-                    'status': 'error',
-                    'message': f"Gemini API error: {error_message}"
-                }), 500
+        return jsonify({
+            'status': 'success',
+            'recommendation': recommendation,
+            'session_id': session_id
+        })
 
     except Exception as e:
         app.logger.error(f"Recommendation error: {str(e)}")
@@ -184,16 +328,6 @@ def get_recommendation():
 @app.route('/ask_question', methods=['POST'])
 def ask_question():
     try:
-        # Check for API key before processing
-        if not GEMINI_API_KEY:
-            return jsonify({
-                'status': 'error',
-                'message': 'GEMINI_API_KEY environment variable is not set. Please set it in your .env file.'
-            }), 500
-            
-        # Configure API with current key
-        genai.configure(api_key=GEMINI_API_KEY)
-        
         question = request.form.get('question', '').strip()
         session_id = request.form.get('session_id', '').strip()
         language = request.form.get('language', 'English')
@@ -232,39 +366,25 @@ def ask_question():
         """
 
         # Generate answer
-        try:
-            model = genai.GenerativeModel(
-                model_name='gemini-1.5-pro',
-                generation_config=GENERATION_CONFIG,
-                safety_settings=SAFETY_SETTINGS
-            )
-            
-            response = model.generate_content(follow_up_prompt)
-            answer = response.text
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            generation_config=GENERATION_CONFIG,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        response = model.generate_content(follow_up_prompt)
+        answer = response.text
 
-            # Update conversation history
-            session['chat_history'].extend([
-                {'role': 'user', 'content': question},
-                {'role': 'assistant', 'content': answer}
-            ])
+        # Update conversation history
+        session['chat_history'].extend([
+            {'role': 'user', 'content': question},
+            {'role': 'assistant', 'content': answer}
+        ])
 
-            return jsonify({
-                'status': 'success',
-                'answer': answer
-            })
-        except Exception as api_error:
-            # Handle API-specific errors
-            error_message = str(api_error)
-            if "API_KEY_INVALID" in error_message or "API key expired" in error_message:
-                return jsonify({
-                    'status': 'error',
-                    'message': 'The Gemini API key is invalid or has expired. Please update your API key in the .env file.'
-                }), 401
-            else:
-                return jsonify({
-                    'status': 'error',
-                    'message': f"Gemini API error: {error_message}"
-                }), 500
+        return jsonify({
+            'status': 'success',
+            'answer': answer
+        })
 
     except Exception as e:
         app.logger.error(f"Question error: {str(e)}")
@@ -274,12 +394,4 @@ def ask_question():
         }), 500
 
 if __name__ == '__main__':
-    # Provide helpful message about API key status when starting the app
-    if not GEMINI_API_KEY:
-        print("\n⚠️  WARNING: GEMINI_API_KEY environment variable is not set!")
-        print("Please ensure you have created a .env file with your valid API key.")
-        print("Example: GEMINI_API_KEY=your_api_key_here\n")
-    else:
-        print("\n✅ GEMINI_API_KEY is configured. API key found in environment variables.\n")
-        
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
